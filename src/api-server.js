@@ -363,6 +363,96 @@ async function getApiService(config) {
 }
 
 /**
+ * Handles refresh token requests for Kiro OAuth provider
+ * @param {Object} config - The current configuration object
+ * @returns {Promise<Object>} Response object with refresh status
+ */
+async function handleRefreshTokenRequest(config) {
+    // Only support refresh for Kiro OAuth provider
+    if (config.MODEL_PROVIDER !== MODEL_PROVIDER.KIRO_API) {
+        throw new Error(`Token refresh is only supported for ${MODEL_PROVIDER.KIRO_API} provider. Current provider: ${config.MODEL_PROVIDER}`);
+    }
+
+    try {
+        // Get the Kiro API service instance
+        console.log(`[Refresh Kiro Token] Getting API service for provider: ${config.MODEL_PROVIDER}`);
+        const apiService = await getApiService(config);
+        console.log(`[Refresh Kiro Token] API service type: ${apiService.constructor.name}`);
+
+        const kiroService = apiService.kiroApiService; // Get the underlying KiroApiService instance
+
+        // Check if kiroService exists and is initialized
+        if (!kiroService) {
+            throw new Error(`Kiro API service is not available. Make sure MODEL_PROVIDER is set to ${MODEL_PROVIDER.KIRO_API}`);
+        }
+
+        console.log(`[Refresh Kiro Token] Kiro service found, initializing...`);
+        // Ensure the service is initialized
+        await kiroService.initialize();
+
+        // Check if expiresAt exists and if token needs refresh
+        if (!kiroService.expiresAt) {
+            return {
+                success: false,
+                message: 'No expiration time found for current token',
+                refreshed: false
+            };
+        }
+
+        const expiresAtTime = new Date(kiroService.expiresAt).getTime();
+        const currentTime = Date.now();
+        const fiveMinutesInMs = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+        // Print readable expiration time
+        const expiresAtReadable = new Date(expiresAtTime).toLocaleString();
+        const currentTimeReadable = new Date(currentTime).toLocaleString();
+        console.log(`[Refresh Kiro Token] Current time: ${currentTimeReadable}`);
+        console.log(`[Refresh Kiro Token] Token expires at: ${expiresAtReadable}`);
+
+        if (expiresAtTime > currentTime + fiveMinutesInMs) {
+            // Token is still valid for more than 5 minutes
+            const timeUntilExpiry = expiresAtTime - currentTime;
+            const minutesUntilExpiry = Math.floor(timeUntilExpiry / (60 * 1000));
+
+            console.log(`[Refresh Kiro Token] Token is still valid for ${minutesUntilExpiry} more minutes. No refresh needed.`);
+
+            return {
+                success: true,
+                message: `Token is still valid for ${minutesUntilExpiry} more minutes. No refresh needed.`,
+                refreshed: false,
+                expiresAt: kiroService.expiresAt,
+                expiresAtReadable: expiresAtReadable,
+                minutesUntilExpiry: minutesUntilExpiry
+            };
+        }
+
+        // Token is expired or will expire within 5 minutes, force refresh
+        console.log('[Refresh Kiro Token] Token is expired or will expire within 5 minutes. Forcing refresh...');
+
+        await kiroService.initializeAuth(true); // Force refresh with forceRefresh = true
+
+        const newExpiresAtReadable = new Date(kiroService.expiresAt).toLocaleString();
+        const refreshedAtReadable = new Date().toLocaleString();
+
+        console.log(`[Refresh Kiro Token] Token refreshed successfully. New expiration: ${newExpiresAtReadable}`);
+
+        return {
+            success: true,
+            message: 'Token refreshed successfully',
+            refreshed: true,
+            expiresAt: kiroService.expiresAt,
+            expiresAtReadable: newExpiresAtReadable,
+            refreshedAt: new Date().toISOString(),
+            refreshedAtReadable: refreshedAtReadable
+        };
+
+    } catch (error) {
+        console.error('[Refresh Token] Failed to refresh token:', error.message);
+        throw new Error(`Token refresh failed: ${error.message}`);
+    }
+}
+
+/**
  * Main request handler. It authenticates the request, determines the endpoint type,
  * and delegates to the appropriate specialized handler function.
  * @param {http.IncomingMessage} req The HTTP request object.
@@ -415,7 +505,7 @@ function createRequestHandler(config) {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-goog-api-key');
-            
+
             // OPTIONS 请求通常返回 204 No Content
             res.writeHead(204);
             res.end();
@@ -430,6 +520,24 @@ function createRequestHandler(config) {
                 timestamp: new Date().toISOString(),
                 provider: currentConfig.MODEL_PROVIDER
             }));
+        }
+
+        // Refresh Kiro token endpoint - requires authentication
+        if (method === 'GET' && path === '/refresh-kiro-token') {
+            try {
+                const result = await handleRefreshTokenRequest(currentConfig);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (error) {
+                console.error('[Refresh Kiro Token] Error:', error.message);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({
+                    error: {
+                        message: 'Failed to refresh Kiro token',
+                        details: error.message
+                    }
+                }));
+            }
         }
 
         if (!isAuthorized(req, requestUrl, currentConfig.REQUIRED_API_KEY)) {
@@ -508,6 +616,7 @@ async function startServer() {
         console.log(`  • Gemini-compatible: /v1beta/models, /v1beta/models/{model}:generateContent`);
         console.log(`  • Claude-compatible: /v1/messages`);
         console.log(`  • Health check: /health`);
+        console.log(`  • Kiro token refresh: /refresh-kiro-token (for Kiro OAuth only)`);
     });
     return server; // Return the server instance for testing purposes
 }
