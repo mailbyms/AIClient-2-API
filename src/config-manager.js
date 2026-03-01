@@ -81,7 +81,7 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
             SYSTEM_PROMPT_MODE: 'append',
             PROMPT_LOG_BASE_NAME: "prompt_log",
             PROMPT_LOG_MODE: "none",
-            REQUEST_MAX_RETRIES: 3,
+            REQUEST_MAX_RETRIES: 0,
             REQUEST_BASE_DELAY: 1000,
             CRON_NEAR_MINUTES: 15,
             CRON_REFRESH_TOKEN: false,

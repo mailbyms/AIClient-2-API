@@ -427,7 +427,7 @@ export class GeminiApiService {
     }
 
     async callApi(method, body, isRetry = false, retryCount = 0) {
-        const maxRetries = this.config.REQUEST_MAX_RETRIES || 3;
+        const maxRetries = this.config.REQUEST_MAX_RETRIES || 0;
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {
@@ -471,7 +471,7 @@ export class GeminiApiService {
     }
 
     async * streamApi(method, body, isRetry = false, retryCount = 0) {
-        const maxRetries = this.config.REQUEST_MAX_RETRIES || 3;
+        const maxRetries = this.config.REQUEST_MAX_RETRIES || 0;
         const baseDelay = this.config.REQUEST_BASE_DELAY || 1000; // 1 second base delay
 
         try {

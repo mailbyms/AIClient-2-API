@@ -164,11 +164,11 @@ export function isAuthorized(req, requestUrl, REQUIRED_API_KEY) {
  * @param {Object} responsePayload - The actual response payload (string for unary, object for stream chunks).
  * @param {boolean} isStream - Whether the response is a stream.
  */
-export async function handleUnifiedResponse(res, responsePayload, isStream) {
+export async function handleUnifiedResponse(res, responsePayload, isStream, statusCode = 200) {
     if (isStream) {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "Transfer-Encoding": "chunked" });
     } else {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
     }
 
     if (isStream) {
@@ -251,11 +251,25 @@ export async function handleStreamRequest(res, service, model, requestBody, from
             });
         }
 
-        // 使用新方法创建符合 fromProvider 格式的流式错误响应
-        const errorPayload = createStreamErrorResponse(error, fromProvider);
-        res.write(errorPayload);
-        res.end();
-        responseClosed = true;
+        // 对于 Gemini 客户端的 429 错误，原样返回上游响应
+        const isGeminiClient = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.GEMINI;
+        const is429Error = error.response?.status === 429;
+
+        if (isGeminiClient && is429Error && error.response?.data) {
+            // 原样返回上游的响应数据（流式响应无法修改状态码，已在开始时设置为 200）
+            const originalResponse = typeof error.response.data === 'string'
+                ? error.response.data
+                : JSON.stringify(error.response.data);
+            res.write(`data: ${originalResponse}\n\n`);
+            res.end();
+            responseClosed = true;
+        } else {
+            // 使用新方法创建符合 fromProvider 格式的流式错误响应
+            const errorPayload = createStreamErrorResponse(error, fromProvider);
+            res.write(errorPayload);
+            res.end();
+            responseClosed = true;
+        }
     } finally {
         if (!responseClosed) {
             res.end();
@@ -303,6 +317,19 @@ export async function handleUnaryRequest(res, service, model, requestBody, fromP
             providerPoolManager.markProviderUnhealthy(toProvider, {
                 uuid: pooluuid
             });
+        }
+
+        // 对于 Gemini 客户端的 429 错误，原样返回上游响应
+        const isGeminiClient = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.GEMINI;
+        const is429Error = error.response?.status === 429;
+
+        if (isGeminiClient && is429Error && error.response?.data) {
+            // 原样返回上游的响应数据，使用 429 状态码
+            const originalResponse = typeof error.response.data === 'string'
+                ? error.response.data
+                : JSON.stringify(error.response.data);
+            await handleUnifiedResponse(res, originalResponse, false, 429);
+            return;
         }
 
         // 使用新方法创建符合 fromProvider 格式的错误响应
