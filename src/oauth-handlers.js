@@ -5,7 +5,6 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import open from 'open';
-import { broadcastEvent } from './ui-manager.js';
 
 /**
  * OAuth 提供商配置
@@ -126,14 +125,7 @@ async function createOAuthCallbackServer(config, redirectUri, authClient, credPa
                         await fs.promises.mkdir(path.dirname(credPath), { recursive: true });
                         await fs.promises.writeFile(credPath, JSON.stringify(tokens, null, 2));
                         console.log(`${config.logPrefix} 新令牌已接收并保存到文件`);
-                        
-                        // 广播授权成功事件
-                        broadcastEvent('oauth_success', {
-                            provider: provider,
-                            credPath: credPath,
-                            timestamp: new Date().toISOString()
-                        });
-                        
+
                         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
                         res.end(generateResponsePage(true, '您可以关闭此页面'));
                     } catch (tokenError) {
@@ -349,17 +341,10 @@ async function pollQwenToken(deviceCode, codeVerifier, interval = 5, expiresIn =
                 await fs.promises.mkdir(path.dirname(credPath), { recursive: true });
                 await fs.promises.writeFile(credPath, JSON.stringify(data, null, 2));
                 console.log(`${QWEN_OAUTH_CONFIG.logPrefix} 令牌已保存到 ${credPath}`);
-                
+
                 // 清理任务
                 activePollingTasks.delete(taskId);
-                
-                // 广播授权成功事件
-                broadcastEvent('oauth_success', {
-                    provider: 'openai-qwen-oauth',
-                    credPath: credPath,
-                    timestamp: new Date().toISOString()
-                });
-                
+
                 return data;
             }
             
@@ -457,14 +442,8 @@ export async function handleQwenOAuth(currentConfig) {
         pollQwenToken(deviceAuth.device_code, codeVerifier, interval, expiresIn, taskId)
             .catch(error => {
                 console.error(`${QWEN_OAUTH_CONFIG.logPrefix} 轮询失败 [${taskId}]:`, error);
-                // 广播授权失败事件
-                broadcastEvent('oauth_error', {
-                    provider: 'openai-qwen-oauth',
-                    error: error.message,
-                    timestamp: new Date().toISOString()
-                });
             });
-        
+
         return {
             authUrl: deviceAuth.verification_uri_complete,
             authInfo: {

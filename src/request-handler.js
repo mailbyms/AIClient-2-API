@@ -1,21 +1,17 @@
 import deepmerge from 'deepmerge';
 import { handleError, isAuthorized } from './common.js';
-import { handleUIApiRequests, serveStaticFiles } from './ui-manager.js';
 import { handleAPIRequests } from './api-manager.js';
 import { getApiService } from './service-manager.js';
-import { getProviderPoolManager } from './service-manager.js';
 import { MODEL_PROVIDER } from './common.js';
 import { PROMPT_LOG_FILENAME } from './config-manager.js';
-import { handleOllamaRequest, handleOllamaShow } from './ollama-handler.js';
 
 /**
  * Main request handler. It authenticates the request, determines the endpoint type,
  * and delegates to the appropriate specialized handler function.
  * @param {Object} config - The server configuration
- * @param {Object} providerPoolManager - The provider pool manager instance
  * @returns {Function} - The request handler function
  */
-export function createRequestHandler(config, providerPoolManager) {
+export function createRequestHandler(config) {
     return async function requestHandler(req, res) {
         // Deep copy the config for each request to allow dynamic modification
         const currentConfig = deepmerge({}, config);
@@ -31,21 +27,6 @@ export function createRequestHandler(config, providerPoolManager) {
             res.writeHead(204);
             res.end();
             return;
-        }
-
-        // Serve static files for UI (除了登录页面需要认证)
-        if (path.startsWith('/static/') || path === '/' || path === '/favicon.ico' || path === '/index.html' || path.startsWith('/app/') || path === '/login.html') {
-            const served = await serveStaticFiles(path, res);
-            if (served) return;
-        }
-
-        const uiHandled = await handleUIApiRequests(method, path, req, res, currentConfig, providerPoolManager);
-        if (uiHandled) return;
-
-        // Ollama show endpoint with model name
-        if (method === 'POST' && path === '/ollama/api/show') {
-            await handleOllamaShow(req, res);
-            return true;
         }
 
         console.log(`\n${new Date().toLocaleString()}`);
@@ -80,7 +61,7 @@ export function createRequestHandler(config, providerPoolManager) {
             currentConfig.MODEL_PROVIDER = modelProviderHeader;
             console.log(`[Config] MODEL_PROVIDER overridden by header to: ${currentConfig.MODEL_PROVIDER}`);
         }
-          
+
         // Check if the first path segment matches a MODEL_PROVIDER and switch if it does
         const pathSegments = path.split('/').filter(segment => segment.length > 0);
         if (pathSegments.length > 0) {
@@ -97,18 +78,12 @@ export function createRequestHandler(config, providerPoolManager) {
             }
         }
 
-        // 获取或选择 API Service 实例
+        // 获取 API Service 实例
         let apiService;
         try {
             apiService = await getApiService(currentConfig);
         } catch (error) {
             handleError(res, { statusCode: 500, message: `Failed to get API service: ${error.message}` });
-            const poolManager = getProviderPoolManager();
-            if (poolManager) {
-                poolManager.markProviderUnhealthy(currentConfig.MODEL_PROVIDER, {
-                    uuid: currentConfig.uuid
-                });
-            }
             return;
         }
 
@@ -120,13 +95,8 @@ export function createRequestHandler(config, providerPoolManager) {
         }
 
         try {
-            // Handle Ollama request (normalize path and route to appropriate endpoints)
-            const { handled, normalizedPath } = await handleOllamaRequest(method, path, requestUrl, req, res, apiService, currentConfig, providerPoolManager);
-            if (handled) return;
-            path = normalizedPath;
-
             // Handle API requests
-            const apiHandled = await handleAPIRequests(method, path, req, res, currentConfig, apiService, providerPoolManager, PROMPT_LOG_FILENAME);
+            const apiHandled = await handleAPIRequests(method, path, req, res, currentConfig, apiService, PROMPT_LOG_FILENAME);
             if (apiHandled) return;
 
             // Fallback for unmatched routes

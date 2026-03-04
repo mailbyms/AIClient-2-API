@@ -3,7 +3,6 @@ import * as path from 'path';
 import * as http from 'http'; // Add http for IncomingMessage and ServerResponse types
 import * as crypto from 'crypto'; // Import crypto for MD5 hashing
 import { ApiServiceAdapter } from './adapter.js'; // Import ApiServiceAdapter
-import { convertData, getOpenAIStreamChunkStop, getOpenAIResponsesStreamChunkBegin, getOpenAIResponsesStreamChunkEnd } from './convert.js';
 import { ProviderStrategyFactory } from './provider-strategies.js';
 
 export const API_ACTIONS = {
@@ -178,21 +177,14 @@ export async function handleUnifiedResponse(res, responsePayload, isStream, stat
     }
 }
 
-export async function handleStreamRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid) {
+export async function handleStreamRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME) {
     let fullResponseText = '';
-    let fullResponseJson = '';
-    let fullOldResponseJson = '';
     let responseClosed = false;
 
     await handleUnifiedResponse(res, '', true);
 
-    // fs.writeFile('request'+Date.now()+'.json', JSON.stringify(requestBody));
-    // The service returns a stream in its native format (toProvider).
-    const needsConversion = getProtocolPrefix(fromProvider) !== getProtocolPrefix(toProvider);
     requestBody.model = model;
     const nativeStream = await service.generateContentStream(model, requestBody);
-    const addEvent = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.CLAUDE || getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES;
-    const openStop = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.OPENAI ;
 
     try {
         for await (const nativeChunk of nativeStream) {
@@ -202,61 +194,22 @@ export async function handleStreamRequest(res, service, model, requestBody, from
                 fullResponseText += chunkText;
             }
 
-            // Convert the complete chunk object to the client's format (fromProvider), if necessary.
-            const chunkToSend = needsConversion
-                ? convertData(nativeChunk, 'streamChunk', toProvider, fromProvider, model)
-                : nativeChunk;
-
-            if (!chunkToSend) {
-                continue;
-            }
-
-            // 处理 chunkToSend 可能是数组或对象的情况
-            const chunksToSend = Array.isArray(chunkToSend) ? chunkToSend : [chunkToSend];
+            // 原样返回响应，不进行格式转换
+            const chunksToSend = Array.isArray(nativeChunk) ? nativeChunk : [nativeChunk];
 
             for (const chunk of chunksToSend) {
-                if (addEvent) {
-                    // fullOldResponseJson += chunk.type+"\n";
-                    // fullResponseJson += chunk.type+"\n";
+                if (chunk.type) {
                     res.write(`event: ${chunk.type}\n`);
-                    // console.log(`event: ${chunk.type}\n`);
                 }
-
-                // fullOldResponseJson += JSON.stringify(chunk)+"\n";
-                // fullResponseJson += JSON.stringify(chunk)+"\n\n";
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-                // console.log(`data: ${JSON.stringify(chunk)}\n`);
             }
-        }
-        if (openStop && needsConversion) {
-            res.write(`data: ${JSON.stringify(getOpenAIStreamChunkStop(model))}\n\n`);
-            // console.log(`data: ${JSON.stringify(getOpenAIStreamChunkStop(model))}\n`);
-        }
-
-        // 流式请求成功完成，统计使用次数，错误次数重置为0
-        if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}) after successful stream request`);
-            providerPoolManager.markProviderHealthy(toProvider, {
-                uuid: pooluuid
-            });
         }
 
     }  catch (error) {
         console.error('\n[Server] Error during stream processing:', error.stack);
-        if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Marking ${toProvider} as unhealthy due to stream error`);
-            // 如果是号池模式，并且请求处理失败，则标记当前使用的提供者为不健康
-            providerPoolManager.markProviderUnhealthy(toProvider, {
-                uuid: pooluuid
-            });
-        }
 
-        // 对于 Gemini 客户端的 429 错误，原样返回上游响应
-        const isGeminiClient = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.GEMINI;
-        const is429Error = error.response?.status === 429;
-
-        if (isGeminiClient && is429Error && error.response?.data) {
-            // 原样返回上游的响应数据（流式响应无法修改状态码，已在开始时设置为 200）
+        // 原样返回上游错误响应
+        if (error.response?.data) {
             const originalResponse = typeof error.response.data === 'string'
                 ? error.response.data
                 : JSON.stringify(error.response.data);
@@ -275,60 +228,29 @@ export async function handleStreamRequest(res, service, model, requestBody, from
             res.end();
         }
         await logConversation('output', fullResponseText, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME);
-        // fs.writeFile('oldResponseChunk'+Date.now()+'.json', fullOldResponseJson);
-        // fs.writeFile('responseChunk'+Date.now()+'.json', fullResponseJson);
     }
 }
 
 
-export async function handleUnaryRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid) {
+export async function handleUnaryRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME) {
     try{
-        // The service returns the response in its native format (toProvider).
-        const needsConversion = getProtocolPrefix(fromProvider) !== getProtocolPrefix(toProvider);
         requestBody.model = model;
-        // fs.writeFile('oldRequest'+Date.now()+'.json', JSON.stringify(requestBody));
         const nativeResponse = await service.generateContent(model, requestBody);
         const responseText = extractResponseText(nativeResponse, toProvider);
 
-        // Convert the response back to the client's format (fromProvider), if necessary.
-        let clientResponse = nativeResponse;
-        if (needsConversion) {
-            console.log(`[Response Convert] Converting response from ${toProvider} to ${fromProvider}`);
-            clientResponse = convertData(nativeResponse, 'response', toProvider, fromProvider, model);
-        }
-
-        //console.log(`[Response] Sending response to client: ${JSON.stringify(clientResponse)}`);
-        await handleUnifiedResponse(res, JSON.stringify(clientResponse), false);
+        // 原样返回响应，不进行格式转换
+        await handleUnifiedResponse(res, JSON.stringify(nativeResponse), false);
         await logConversation('output', responseText, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME);
-        // fs.writeFile('oldResponse'+Date.now()+'.json', JSON.stringify(clientResponse));
-        
-        // 一元请求成功完成，统计使用次数，错误次数重置为0
-        if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}) after successful unary request`);
-            providerPoolManager.markProviderHealthy(toProvider, {
-                uuid: pooluuid
-            });
-        }
     } catch (error) {
         console.error('\n[Server] Error during unary processing:', error.stack);
-        if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Marking ${toProvider} as unhealthy due to stream error`);
-            // 如果是号池模式，并且请求处理失败，则标记当前使用的提供者为不健康
-            providerPoolManager.markProviderUnhealthy(toProvider, {
-                uuid: pooluuid
-            });
-        }
 
-        // 对于 Gemini 客户端的 429 错误，原样返回上游响应
-        const isGeminiClient = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.GEMINI;
-        const is429Error = error.response?.status === 429;
-
-        if (isGeminiClient && is429Error && error.response?.data) {
-            // 原样返回上游的响应数据，使用 429 状态码
+        // 原样返回上游错误响应
+        if (error.response?.data) {
             const originalResponse = typeof error.response.data === 'string'
                 ? error.response.data
                 : JSON.stringify(error.response.data);
-            await handleUnifiedResponse(res, originalResponse, false, 429);
+            const statusCode = error.response?.status || 500;
+            await handleUnifiedResponse(res, originalResponse, false, statusCode);
             return;
         }
 
@@ -348,44 +270,16 @@ export async function handleUnaryRequest(res, service, model, requestBody, fromP
  * @param {string} endpointType The type of endpoint being called (e.g., OPENAI_MODEL_LIST).
  * @param {Object} CONFIG - The server configuration object.
  */
-export async function handleModelListRequest(req, res, service, endpointType, CONFIG, providerPoolManager, pooluuid) {
+export async function handleModelListRequest(req, res, service, endpointType, CONFIG) {
     try{
-        const clientProviderMap = {
-            [ENDPOINT_TYPE.OPENAI_MODEL_LIST]: MODEL_PROTOCOL_PREFIX.OPENAI,
-            [ENDPOINT_TYPE.GEMINI_MODEL_LIST]: MODEL_PROTOCOL_PREFIX.GEMINI,
-        };
-
-
-        const fromProvider = clientProviderMap[endpointType];
-        const toProvider = CONFIG.MODEL_PROVIDER;
-
-        if (!fromProvider) {
-            throw new Error(`Unsupported endpoint type for model list: ${endpointType}`);
-        }
-
-        // 1. Get the model list in the backend's native format.
+        // 获取模型列表，原样返回，不进行格式转换
         const nativeModelList = await service.listModels();
-                
-        // 2. Convert the model list to the client's expected format, if necessary.
-        let clientModelList = nativeModelList;
-        if (!getProtocolPrefix(toProvider).includes(getProtocolPrefix(fromProvider))) {
-            console.log(`[ModelList Convert] Converting model list from ${toProvider} to ${fromProvider}`);
-            clientModelList = convertData(nativeModelList, 'modelList', toProvider, fromProvider);
-        } else {
-            console.log(`[ModelList Convert] Model list format matches. No conversion needed.`);
-        }
 
-        console.log(`[ModelList Response] Sending model list to client: ${JSON.stringify(clientModelList)}`);
+        console.log(`[ModelList Response] Sending model list to client: ${JSON.stringify(nativeModelList)}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(clientModelList));
+        res.end(JSON.stringify(nativeModelList));
     } catch (error) {
         console.error('\n[Server] Error during model list processing:', error.stack);
-        if (providerPoolManager) {
-            // 如果是号池模式，并且请求处理失败，则标记当前使用的提供者为不健康
-            providerPoolManager.markProviderUnhealthy(toProvider, {
-                uuid: pooluuid
-            });
-        }
     }
 }
 
@@ -400,7 +294,7 @@ export async function handleModelListRequest(req, res, service, endpointType, CO
  * @param {Object} CONFIG - The server configuration object.
  * @param {string} PROMPT_LOG_FILENAME - The prompt log filename.
  */
-export async function handleContentGenerationRequest(req, res, service, endpointType, CONFIG, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid) {
+export async function handleContentGenerationRequest(req, res, service, endpointType, CONFIG, PROMPT_LOG_FILENAME) {
     const originalRequestBody = await getRequestBody(req);
     if (!originalRequestBody) {
         throw new Error("Request body is missing for content generation.");
@@ -415,22 +309,15 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
 
     const fromProvider = clientProviderMap[endpointType];
     const toProvider = CONFIG.MODEL_PROVIDER;
-    
+
     if (!fromProvider) {
         throw new Error(`Unsupported endpoint type for content generation: ${endpointType}`);
     }
 
-    // 1. Convert request body from client format to backend format, if necessary.
-    let processedRequestBody = originalRequestBody;
-    // fs.writeFile('originalRequestBody'+Date.now()+'.json', JSON.stringify(originalRequestBody));
-    if (getProtocolPrefix(fromProvider) !== getProtocolPrefix(toProvider)) {
-        console.log(`[Request Convert] Converting request from ${fromProvider} to ${toProvider}`);
-        processedRequestBody = convertData(originalRequestBody, 'request', fromProvider, toProvider);
-    } else {
-        console.log(`[Request Convert] Request format matches backend provider. No conversion needed.`);
-    }
+    // 不进行请求格式转换，直接使用原始请求体
+    const processedRequestBody = originalRequestBody;
 
-    // 2. Extract model and determine if the request is for streaming.
+    // Extract model and determine if the request is for streaming.
     const { model, isStream } = _extractModelAndStreamInfo(req, originalRequestBody, fromProvider);
 
     if (!model) {
@@ -438,27 +325,19 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
     }
     console.log(`[Content Generation] Model: ${model}, Stream: ${isStream}`);
 
-    // 2.5. 如果使用了提供商池，根据模型重新选择提供商
-    // 注意：这里使用 skipUsageCount: true，因为初次选择时已经增加了 usageCount
-    if (providerPoolManager && CONFIG.providerPools && CONFIG.providerPools[CONFIG.MODEL_PROVIDER]) {
-        const { getApiService } = await import('./service-manager.js');
-        service = await getApiService(CONFIG, model);
-        console.log(`[Content Generation] Re-selected service adapter based on model: ${model}`);
-    }
+    // Apply system prompt from file if configured.
+    const processedRequestBodyWithPrompt = await _applySystemPromptFromFile(CONFIG, processedRequestBody, toProvider);
+    await _manageSystemPrompt(processedRequestBodyWithPrompt, toProvider);
 
-    // 3. Apply system prompt from file if configured.
-    processedRequestBody = await _applySystemPromptFromFile(CONFIG, processedRequestBody, toProvider);
-    await _manageSystemPrompt(processedRequestBody, toProvider);
-
-    // 4. Log the incoming prompt (after potential conversion to the backend's format).
-    const promptText = extractPromptText(processedRequestBody, toProvider);
+    // Log the incoming prompt
+    const promptText = extractPromptText(processedRequestBodyWithPrompt, toProvider);
     await logConversation('input', promptText, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME);
-    
-    // 5. Call the appropriate stream or unary handler, passing the provider info.
+
+    // Call the appropriate stream or unary handler, passing the provider info.
     if (isStream) {
-        await handleStreamRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid);
+        await handleStreamRequest(res, service, model, processedRequestBodyWithPrompt, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME);
     } else {
-        await handleUnaryRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid);
+        await handleUnaryRequest(res, service, model, processedRequestBodyWithPrompt, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME);
     }
 }
 

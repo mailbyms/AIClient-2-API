@@ -84,9 +84,7 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
             REQUEST_MAX_RETRIES: 0,
             REQUEST_BASE_DELAY: 1000,
             CRON_NEAR_MINUTES: 15,
-            CRON_REFRESH_TOKEN: false,
-            PROVIDER_POOLS_FILE_PATH: null, // 新增号池配置文件路径
-            MAX_ERROR_COUNT: 3 // 提供商最大错误次数
+            CRON_REFRESH_TOKEN: false
         };
         console.log('[Config] Using default configuration.');
     }
@@ -245,20 +243,6 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
             } else {
                 console.warn(`[Config Warning] --cron-refresh-token flag requires a value.`);
             }
-        } else if (args[i] === '--provider-pools-file') {
-            if (i + 1 < args.length) {
-                currentConfig.PROVIDER_POOLS_FILE_PATH = args[i + 1];
-                i++;
-            } else {
-                console.warn(`[Config Warning] --provider-pools-file flag requires a value.`);
-            }
-        } else if (args[i] === '--max-error-count') {
-            if (i + 1 < args.length) {
-                currentConfig.MAX_ERROR_COUNT = parseInt(args[i + 1], 10);
-                i++;
-            } else {
-                console.warn(`[Config Warning] --max-error-count flag requires a value.`);
-            }
         }
     }
 
@@ -268,23 +252,6 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
         currentConfig.SYSTEM_PROMPT_FILE_PATH = INPUT_SYSTEM_PROMPT_FILE;
     }
     currentConfig.SYSTEM_PROMPT_CONTENT = await getSystemPromptFileContent(currentConfig.SYSTEM_PROMPT_FILE_PATH);
-
-    // 加载号池配置
-    if (!currentConfig.PROVIDER_POOLS_FILE_PATH) {
-        currentConfig.PROVIDER_POOLS_FILE_PATH = 'provider_pools.json';
-    }
-    if (currentConfig.PROVIDER_POOLS_FILE_PATH) {
-        try {
-            const poolsData = await pfs.readFile(currentConfig.PROVIDER_POOLS_FILE_PATH, 'utf8');
-            currentConfig.providerPools = JSON.parse(poolsData);
-            console.log(`[Config] Loaded provider pools from ${currentConfig.PROVIDER_POOLS_FILE_PATH}`);
-        } catch (error) {
-            console.error(`[Config Error] Failed to load provider pools from ${currentConfig.PROVIDER_POOLS_FILE_PATH}: ${error.message}`);
-            currentConfig.providerPools = {};
-        }
-    } else {
-        currentConfig.providerPools = {};
-    }
 
     // Set PROMPT_LOG_FILENAME based on the determined config
     if (currentConfig.PROMPT_LOG_MODE === 'file') {
